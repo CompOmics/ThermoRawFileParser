@@ -2,18 +2,18 @@
 
 A tool allowing reading Thermo RAW mass spectrometer files and converting to common open formats on all platforms supporting .NET Core.
 
-Supported formats:
+Supported output formats:
 * MGF
 * mzML and indexed mzML
 * Apache Parquet
 
 Version before 2.0.0 require Mono to run on Linux and Mac.
 
-As of version 1.2.0, 2 subcommands are available (shoutout to the [eubic 2020 developers meeting](https://eubic-ms.org/events/2020-developers-meeting/), see [usage](#usage) for examples):
+The following subcommands (introduced in version 1.2.0 - shoutout to the [eubic 2020 developers meeting](https://eubic-ms.org/events/2020-developers-meeting/)) are available.
 * query: returns one or more spectra in JSON PROXI by scan number(s)
 * xic: returns chromatogram data based on JSON filter input
 
-RawFileReader reading tool. Copyright © 2016 by Thermo Fisher Scientific, Inc. All rights reserved
+This software uses **RawFileReader reading tool Copyright © 2016 by Thermo Fisher Scientific, Inc. All rights reserved**
 
 ## ThermoRawFileParser Publication:
   * Hulstaert N, Shofstahl J, Sachsenberg T, Walzer M, Barsnes H, Martens L, Perez-Riverol Y: _ThermoRawFileParser: Modular, Scalable, and Cross-Platform RAW File Conversion_ [[PMID 31755270](https://www.ncbi.nlm.nih.gov/pubmed/31755270)].
@@ -22,16 +22,24 @@ RawFileReader reading tool. Copyright © 2016 by Thermo Fisher Scientific, Inc. 
 ## Requirements
 
 ### Current version
-Release page provide self-contained releases for OSX, Linux, and Windows and framework-based release. Framework-based release requires [.NET 8 runtime](https://dotnet.microsoft.com/en-us/download/dotnet/8.0/runtime).
+Release page provide self-contained releases for OSX, Linux, and Windows (all necessary dependencies included) and framework-based release. Self-contained releases provided for both `x64` and `arm64` architectures. Framework-based release requires [.NET Core 8 runtime, including ASP.NET Core 8](https://dotnet.microsoft.com/en-us/download/dotnet/8.0/runtime).
+
+**NOTE** In some cases **ASP.NET Core** runtime should be installed separately, check for package `aspnet-runtime` (or similar) in your package manager.
+
+On MacOS you need to bypass security quarantine by running the following:
+```
+> xattr -dr com.apple.quarantine {path_to_ThermoRawFileParser_folder}
+> xattr {path_to_ThermoRawFileParser_folder}/*
+```
 
 For developers: [.NET 8 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/8.0) is required to build the tool.
 
-### Prior to 1.5.0
+### Prior to 2.0.0
 [Mono](https://www.mono-project.com/download/stable/#download-lin) (install mono-complete if you encounter "assembly not found" errors).
 
 ## Download
 
-Click [here](https://github.com/compomics/ThermoRawFileParser/releases) to go to the release page (with [release notes](https://github.com/compomics/ThermoRawFileParser/wiki/ReleaseNotes) starting from v1.1.7).
+Click [here](https://github.com/compomics/ThermoRawFileParser/releases) to go to the release page and choose the release relevant for your platform and architecture.
 
 You can find the ThermoRawFileParserGUI [here](https://github.com/compomics/ThermoRawFileParserGUI).
 
@@ -56,12 +64,12 @@ or
 ThermoRawFileParser -d=/home/user/data_input/
 ```
 
-When running framework-based version use `dotnet ThermoRawFileParser.dll` instead.
+**NOTE**: When running framework-based version use `dotnet ThermoRawFileParser.dll` instead of `ThermoRawFileParser`
 
- The optional parameters only work in the -option=value format. The tool can output some RAW file metadata `-m=0|1` (0 for JSON, 1 for TXT) and the spectra file `-f=0|1|2|3|4` (0 for MGF, 1 for mzML, 2 for indexed mzML, 3 for Parquet, 4 for no output) or both. Use the `-p` flag to disable the thermo native peak picking. 
+The optional parameters only work in the -option=value format. The tool can output some RAW file metadata `-m=0|1` (0 for JSON, 1 for TXT) and the spectra file `-f=0|1|2|3|4` (0 for MGF, 1 for mzML, 2 for indexed mzML, 3 for Parquet, 4 for no output) or both. Use the `-p` flag to disable the peak picking. 
 
 ```
-Usage is ThermoRawFileParser.exe [subcommand] [options]
+Usage is ThermoRawFileParser [subcommand] [options]
 optional subcommands are xic|query (use [subcommand] -h for more info]):
   -h, --help                 Prints out the options.
   -v, --version              Prints out the version of the executable.
@@ -142,11 +150,11 @@ A (java) graphical user interface is also available [here](https://github.com/co
 Enables the retrieval spectra by (a) scan number(s) in [PROXI format](https://github.com/HUPO-PSI/proxi-schemas).
 
 ```
-mono ThermoRawFileParser.exe query -i=/home/user/data_input/raw_file.raw -o=/home/user/output.json n="1-5, 20, 25-30"
+ThermoRawFileParser query -i=/home/user/data_input/raw_file.raw -o=/home/user/output.json n="1-5, 20, 25-30"
 ```
 
 ```
-ThermoRawFileParser.exe query --help
+ThermoRawFileParser query --help
 usage is:
   -h, --help                 Prints out the options.
   -i, --input=VALUE          The raw file input (Required).
@@ -170,11 +178,11 @@ usage is:
 Return one or more chromatograms based on query JSON input.
 
 ```
-mono ThermoRawFileParser.exe xic -i=/home/user/data_input/raw_file.raw -j=/home/user/xic_input.json
+ThermoRawFileParser xic -i=/home/user/data_input/raw_file.raw -j=/home/user/xic_input.json
 ```
 
 ```
-ThermoRawFileParser.exe xic --help
+ThermoRawFileParser xic --help
   -h, --help                 Prints out the options.
   -i, --input=VALUE          The raw file input (Required). Specify this or an
                                input directory -d
@@ -291,7 +299,7 @@ By default the parser only logs to console. To enable logging to file, uncomment
 First check the latest version tag on [biocontainers/thermorawfileparser/tags](https://quay.io/repository/biocontainers/thermorawfileparser?tab=tags). Then pull and run the container with
 
 ```bash
-docker run -i -t -v /home/user/raw:/data_input quay.io/biocontainers/thermorawfileparser:<tag> ThermoRawFileParser.sh --help
+docker run -i -t -v /home/user/raw:/data_input quay.io/biocontainers/thermorawfileparser:<tag> ThermoRawFileParser --help
 ```
 
 [Go to top of page](#thermorawfileparser)

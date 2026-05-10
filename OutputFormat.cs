@@ -6,6 +6,7 @@
         MzML,
         IndexMzML,
         Parquet,
+        BinarySoa,
         None
     }
 

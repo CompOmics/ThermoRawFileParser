@@ -65,6 +65,10 @@ namespace ThermoRawFileParser.Writer
         /// <summary>Default extension used for file output mode.</summary>
         private const string OutputExtension = ".rcia.bin";
 
+        private const uint PeakFlagSortedByMz = 0x1u;
+        private const uint PeakFlagChargeArray = 0x2u;
+        private const uint PeakFlagNoiseArrays = 0x4u;
+
         // ─── Reusable per-instance buffers (writer is single-threaded per file) ──
 
         /// <summary>128-byte scratch for assembling each record's fixed header.</summary>
@@ -73,13 +77,17 @@ namespace ThermoRawFileParser.Writer
         /// <summary>Scratch for building the optional metadata block.
         /// Reset between spectra; capacity grows monotonically as needed.</summary>
         private readonly MemoryStream _metaScratch = new MemoryStream(2048);
+        private readonly BinaryWriter _metaWriter;
 
         /// <summary>Reusable zero-pad source; pad lengths are 0..7 so 8 bytes is always sufficient.</summary>
         private static readonly byte[] ZeroPad = new byte[8];
 
         // ─── Public ctor ─────────────────────────────────────────────────────
 
-        public BinarySoaSpectrumWriter(ParseInput parseInput) : base(parseInput) { }
+        public BinarySoaSpectrumWriter(ParseInput parseInput) : base(parseInput)
+        {
+            _metaWriter = new BinaryWriter(_metaScratch, Encoding.UTF8, leaveOpen: true);
+        }
 
         // ─── Top-level write loop ────────────────────────────────────────────
 
@@ -184,6 +192,7 @@ namespace ThermoRawFileParser.Writer
             double retentionTimeMin = rawFile.RetentionTimeFromScanNumber(scanNumber);
 
             ScanTrailer trailer = LoadTrailer(rawFile, scanNumber);
+            string filterString = scanEvent.ToString() ?? string.Empty;
 
             // Trailer-derived nullable scalars
             int? charge                   = trailer.AsPositiveInt("Charge State:");
@@ -198,19 +207,25 @@ namespace ThermoRawFileParser.Writer
             // Reaction (only meaningful for MS2+)
             double precursorMz             = double.NaN;
             float  isolationWidth          = float.NaN;
-            float  isolationLowerOffset    = float.NaN;
-            float  isolationUpperOffset    = float.NaN;
+            float  isolationLower          = float.NaN;
+            float  isolationUpper          = float.NaN;
             float  collisionEnergy         = float.NaN;
             float  precursorIntensity      = 0f;
             byte   activationType          = 0;
 
             if (msLevel > 1)
             {
+                masterScan = ResolveMasterScanNumber(filterString, scanNumber, masterScan);
+
                 ResolveReactionData(rawFile, scanEvent, scanNumber, msLevel, monoisotopicMz,
                     isolationWidthTrailer, masterScan,
                     out precursorMz, out isolationWidth,
-                    out isolationLowerOffset, out isolationUpperOffset,
+                    out isolationLower, out isolationUpper,
                     out collisionEnergy, out precursorIntensity, out activationType);
+            }
+            else if (msLevel == 1)
+            {
+                _precursorScanNumbers[""] = scanNumber;
             }
 
             // Peak data (centroid by default; respect --noPeakPicking selectively)
@@ -223,19 +238,33 @@ namespace ThermoRawFileParser.Writer
             byte scanDataType = (byte)(mzData.isCentroided ? 1 : 0);
 
             // 2. Encode filter string ────────────────────────────────────────
-            string filterString = scanEvent.ToString() ?? string.Empty;
             byte[] filterBytes = Encoding.UTF8.GetBytes(filterString);
             int filterLen = filterBytes.Length;
             if (filterLen > MaxFilterStringLen)
             {
                 Log.Warn($"Filter string for scan {scanNumber} truncated from {filterLen} to {MaxFilterStringLen} bytes");
+                ParseInput.NewWarn();
                 filterLen = MaxFilterStringLen;
             }
             int filterPadLen = ComputePadLen(RecordFixedHeaderSize + filterLen, 8);
 
             // 3. Compute peak section sizes ─────────────────────────────────
-            int peakSection = nPeaks * 8 + nPeaks * 4;
-            int peakPadLen  = ComputePadLen(peakSection, 8);
+            bool hasChargeArray = nPeaks > 0 && mzData.charges != null && mzData.charges.Length == nPeaks;
+            int noiseCount = GetNoiseArrayCount(mzData);
+            bool hasNoiseArrays = noiseCount > 0;
+
+            int requiredArrayLength = nPeaks * 8 + nPeaks * 4;
+            int optionalArrayPadLen = hasChargeArray || hasNoiseArrays
+                ? ComputePadLen(requiredArrayLength, 8)
+                : 0;
+            int optionalArrayLength =
+                (hasChargeArray ? nPeaks * 8 : 0)
+                + (hasNoiseArrays ? noiseCount * 8 * 3 : 0);
+            int peakSection = requiredArrayLength + optionalArrayPadLen + optionalArrayLength;
+            int peakPadLen = ComputePadLen(peakSection, 8);
+            uint peakFlags = PeakFlagSortedByMz
+                | (hasChargeArray ? PeakFlagChargeArray : 0u)
+                | (hasNoiseArrays ? PeakFlagNoiseArrays : 0u);
 
             // 4. Build metadata block (full trailer dump) into _metaScratch ──
             int metadataLength = BuildMetadataBlock(trailer);
@@ -259,7 +288,7 @@ namespace ThermoRawFileParser.Writer
                 totalSize, scanNumber, msLevel, scanFilter.Polarity, scanDataType, activationType,
                 nPeaks, retentionTimeMin * 60.0,
                 precursorMz, monoisotopicMz ?? double.NaN, mzData.basePeakMass ?? double.NaN,
-                isolationLowerOffset, isolationUpperOffset, isolationWidth,
+                isolationLower, isolationUpper, isolationWidth,
                 precursorIntensity,
                 (float)(mzData.basePeakIntensity ?? double.NaN),
                 (float)scanStats.TIC,
@@ -268,6 +297,7 @@ namespace ThermoRawFileParser.Writer
                 elapsedScanTimeSec.HasValue ? (float)(elapsedScanTimeSec.Value * 1000.0) : float.NaN,
                 (float)scanStats.LowMass, (float)scanStats.HighMass,
                 charge ?? -1, masterScan ?? -1,
+                peakFlags, noiseCount,
                 filterLen, arraysOffset, metadataOffset, (uint)metadataLength);
 
             // 7. Emit ───────────────────────────────────────────────────────
@@ -276,7 +306,8 @@ namespace ThermoRawFileParser.Writer
             if (filterLen > 0) bw.Write(filterBytes, 0, filterLen);
             WritePad(bw, filterPadLen);
 
-            WritePeakArrays(bw, masses, intensities, nPeaks);
+            WritePeakArrays(bw, mzData, masses, intensities, nPeaks, hasChargeArray, hasNoiseArrays,
+                optionalArrayPadLen);
             WritePad(bw, peakPadLen);
 
             if (metadataLength > 0)
@@ -311,7 +342,7 @@ namespace ThermoRawFileParser.Writer
             try
             {
                 return ReadMZData(rawFile, scanEvent, scanNumber, centroid,
-                    /*charge per peak*/ false, /*noise data*/ false);
+                    ParseInput.ChargeData, ParseInput.NoiseData);
             }
             catch (Exception ex)
             {
@@ -328,8 +359,8 @@ namespace ThermoRawFileParser.Writer
 
         /// <summary>
         /// Resolve precursor and reaction info for an MSn scan, accounting for EThcD
-        /// (ETD/ECD followed by HCD/CID supplemental activation). The primary reaction's
-        /// activation type is encoded; the EThcD-specific code (5) is set when the
+        /// and ETciD (ETD/ECD followed by HCD/CID supplemental activation). The primary reaction's
+        /// activation type is encoded; the supplemental activation code (5) is set when the
         /// instrument's <c>SupplementalActivation</c> flag is on AND the sequential
         /// reaction pattern matches.
         /// </summary>
@@ -337,20 +368,20 @@ namespace ThermoRawFileParser.Writer
             IRawDataPlus rawFile, IScanEvent scanEvent, int scanNumber, int msLevel,
             double? monoisotopicMz, double? isolationWidthTrailer, int? masterScan,
             out double precursorMz, out float isolationWidth,
-            out float isolationLowerOffset, out float isolationUpperOffset,
+            out float isolationLower, out float isolationUpper,
             out float collisionEnergy, out float precursorIntensity, out byte activationType)
         {
             precursorMz = double.NaN;
             isolationWidth = float.NaN;
-            isolationLowerOffset = float.NaN;
-            isolationUpperOffset = float.NaN;
+            isolationLower = float.NaN;
+            isolationUpper = float.NaN;
             collisionEnergy = float.NaN;
             precursorIntensity = 0f;
             activationType = 0;
 
             // Determine the primary reaction index. FindLastReaction (defined on the base class)
             // walks the reaction chain and accounts for supplemental activation; calling it
-            // ensures EThcD-style spectra report the ETD/ECD reaction as primary, not the
+            // ensures EThcD/ETciD-style spectra report the ETD/ECD reaction as primary, not the
             // supplemental HCD/CID.
             int primaryReactionIndex;
             try
@@ -366,7 +397,7 @@ namespace ThermoRawFileParser.Writer
                     SetReactionFields(rawFile, scanNumber, msLevel, fallback,
                         monoisotopicMz, isolationWidthTrailer, masterScan,
                         out precursorMz, out isolationWidth,
-                        out isolationLowerOffset, out isolationUpperOffset,
+                        out isolationLower, out isolationUpper,
                         out collisionEnergy, out precursorIntensity);
                     activationType = EncodeActivationType(fallback.ActivationType);
                 }
@@ -384,12 +415,12 @@ namespace ThermoRawFileParser.Writer
             SetReactionFields(rawFile, scanNumber, msLevel, primaryReaction,
                 monoisotopicMz, isolationWidthTrailer, masterScan,
                 out precursorMz, out isolationWidth,
-                out isolationLowerOffset, out isolationUpperOffset,
+                out isolationLower, out isolationUpper,
                 out collisionEnergy, out precursorIntensity);
 
             activationType = EncodeActivationType(primaryReaction.ActivationType);
 
-            // EThcD detection: supplemental activation flag is on AND primary reaction is
+            // EThcD/ETciD detection: supplemental activation flag is on AND primary reaction is
             // ETD/ECD AND a HCD/CID reaction follows it.
             if (scanEvent.SupplementalActivation == TriState.On
                 && (primaryReaction.ActivationType == ActivationType.ElectronTransferDissociation
@@ -401,7 +432,7 @@ namespace ThermoRawFileParser.Writer
                     if (supplemental.ActivationType == ActivationType.HigherEnergyCollisionalDissociation
                      || supplemental.ActivationType == ActivationType.CollisionInducedDissociation)
                     {
-                        activationType = 5; // EThcD
+                        activationType = 5; // EThcD/ETciD
                     }
                 }
                 catch { /* no supplemental — keep primary encoding */ }
@@ -412,16 +443,26 @@ namespace ThermoRawFileParser.Writer
             IRawDataPlus rawFile, int scanNumber, int msLevel, IReaction reaction,
             double? monoisotopicMz, double? isolationWidthTrailer, int? masterScan,
             out double precursorMz, out float isolationWidth,
-            out float isolationLowerOffset, out float isolationUpperOffset,
+            out float isolationLower, out float isolationUpper,
             out float collisionEnergy, out float precursorIntensity)
         {
             precursorMz = CalculateSelectedIonMz(reaction, monoisotopicMz, isolationWidthTrailer);
             collisionEnergy = (float)reaction.CollisionEnergy;
 
-            double iw = isolationWidthTrailer ?? reaction.IsolationWidth;
-            isolationWidth = (float)iw;
-            isolationLowerOffset = (float)(-iw / 2.0);
-            isolationUpperOffset = (float)( iw / 2.0);
+            double? iw = isolationWidthTrailer ?? reaction.IsolationWidth;
+            if (iw.HasValue && iw.Value >= 0)
+            {
+                double offset = iw.Value / 2.0 + reaction.IsolationWidthOffset;
+                isolationWidth = (float)iw.Value;
+                isolationLower = (float)(reaction.PrecursorMass - iw.Value + offset);
+                isolationUpper = (float)(reaction.PrecursorMass + offset);
+            }
+            else
+            {
+                isolationWidth = float.NaN;
+                isolationLower = float.NaN;
+                isolationUpper = float.NaN;
+            }
 
             precursorIntensity = 0f;
             if (masterScan.HasValue && masterScan.Value > 0 && precursorMz > 0)
@@ -436,32 +477,88 @@ namespace ThermoRawFileParser.Writer
             }
         }
 
+        private int? ResolveMasterScanNumber(string filterString, int scanNumber, int? trailerMasterScan)
+        {
+            TrackPrecursorFilter(filterString, scanNumber, out var precursorFilter);
+
+            if (trailerMasterScan.HasValue)
+            {
+                return trailerMasterScan.Value;
+            }
+
+            int precursorScan = GetParentFromScanString(precursorFilter);
+            if (precursorScan == -2)
+            {
+                Log.Warn($"Cannot find precursor scan for scan# {scanNumber}");
+                ParseInput.NewWarn();
+                return null;
+            }
+
+            return precursorScan > 0 ? (int?)precursorScan : null;
+        }
+
+        private void TrackPrecursorFilter(string filterString, int scanNumber, out string precursorFilter)
+        {
+            precursorFilter = "";
+
+            var match = _filterStringIsolationMzPattern.Match(filterString);
+            if (match == null || !match.Success)
+            {
+                return;
+            }
+
+            precursorFilter = match.Groups[1].Value;
+            _precursorScanNumbers[precursorFilter] = scanNumber;
+        }
+
         /// <summary>
         /// Bulk-emit the SoA peak arrays. The mz array is a zero-copy reinterpret of the
         /// existing <c>double[]</c>; the intensity array requires an f64→f32 narrowing pass
         /// over a pooled <c>float[]</c>. The narrowing loop is auto-vectorized by RyuJIT
         /// (AVX2/AVX-512/NEON).
         /// </summary>
-        private static void WritePeakArrays(BinaryWriter bw, double[] masses, double[] intensities, int nPeaks)
+        private static void WritePeakArrays(BinaryWriter bw, MZData mzData, double[] masses, double[] intensities,
+            int nPeaks, bool hasChargeArray, bool hasNoiseArrays, int optionalArrayPadLen)
         {
-            if (nPeaks == 0) return;
-
-            // mz: zero-copy reinterpret of double[] as bytes
-            ReadOnlySpan<byte> mzSpan = MemoryMarshal.AsBytes(masses.AsSpan(0, nPeaks));
-            bw.Write(mzSpan);
-
-            // intensity: f64 → f32 narrow into pooled buffer, emit as bytes
-            float[] intBuf = ArrayPool<float>.Shared.Rent(nPeaks);
-            try
+            if (nPeaks > 0)
             {
-                for (int i = 0; i < nPeaks; i++) intBuf[i] = (float)intensities[i];
-                ReadOnlySpan<byte> intSpan = MemoryMarshal.AsBytes(intBuf.AsSpan(0, nPeaks));
-                bw.Write(intSpan);
+                WriteDoubleArray(bw, masses, nPeaks);
+
+                // intensity: f64 → f32 narrow into pooled buffer, emit as bytes
+                float[] intBuf = ArrayPool<float>.Shared.Rent(nPeaks);
+                try
+                {
+                    for (int i = 0; i < nPeaks; i++) intBuf[i] = (float)intensities[i];
+                    ReadOnlySpan<byte> intSpan = MemoryMarshal.AsBytes(intBuf.AsSpan(0, nPeaks));
+                    bw.Write(intSpan);
+                }
+                finally
+                {
+                    ArrayPool<float>.Shared.Return(intBuf);
+                }
             }
-            finally
+
+            WritePad(bw, optionalArrayPadLen);
+            if (hasChargeArray) WriteDoubleArray(bw, mzData.charges, nPeaks);
+            if (hasNoiseArrays)
             {
-                ArrayPool<float>.Shared.Return(intBuf);
+                int noiseCount = mzData.noiseData.Length;
+                WriteDoubleArray(bw, mzData.massData, noiseCount);
+                WriteDoubleArray(bw, mzData.noiseData, noiseCount);
+                WriteDoubleArray(bw, mzData.baselineData, noiseCount);
             }
+        }
+
+        private static void WriteDoubleArray(BinaryWriter bw, double[] values, int count)
+        {
+            bw.Write(MemoryMarshal.AsBytes(values.AsSpan(0, count)));
+        }
+
+        private static int GetNoiseArrayCount(MZData mzData)
+        {
+            if (mzData.massData == null || mzData.noiseData == null || mzData.baselineData == null) return 0;
+            int count = mzData.noiseData.Length;
+            return mzData.massData.Length == count && mzData.baselineData.Length == count ? count : 0;
         }
 
         /// <summary>
@@ -475,27 +572,32 @@ namespace ThermoRawFileParser.Writer
             if (trailer.Length == 0) return 0;
 
             _metaScratch.SetLength(0);
-            using (var bw = new BinaryWriter(_metaScratch, Encoding.UTF8, leaveOpen: true))
+            _metaScratch.Position = 0;
+            _metaWriter.Write((uint)trailer.Length);
+            var labels = trailer.Labels;
+            var values = trailer.Values;
+            bool truncated = false;
+            for (int i = 0; i < labels.Length; i++)
             {
-                bw.Write((uint)trailer.Length);
-                var labels = trailer.Labels;
-                var values = trailer.Values;
-                for (int i = 0; i < labels.Length; i++)
-                {
-                    WriteLengthPrefixed(bw, labels[i] ?? "");
-                    WriteLengthPrefixed(bw, values[i] ?? "");
-                }
-                bw.Flush();
+                truncated |= WriteLengthPrefixed(_metaWriter, labels[i] ?? "");
+                truncated |= WriteLengthPrefixed(_metaWriter, values[i] ?? "");
             }
+            if (truncated)
+            {
+                Log.Warn($"Trailer metadata field truncated to {MaxKeyOrValueLen} bytes");
+                ParseInput.NewWarn();
+            }
+            _metaWriter.Flush();
             return (int)_metaScratch.Length;
         }
 
-        private static void WriteLengthPrefixed(BinaryWriter bw, string s)
+        private static bool WriteLengthPrefixed(BinaryWriter bw, string s)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(s);
             int len = Math.Min(bytes.Length, MaxKeyOrValueLen);
             bw.Write((ushort)len);
             if (len > 0) bw.Write(bytes, 0, len);
+            return bytes.Length > MaxKeyOrValueLen;
         }
 
         /// <summary>
@@ -507,11 +609,12 @@ namespace ThermoRawFileParser.Writer
             byte scanDataType, byte activationType, int nPeaks,
             double retentionTimeSeconds,
             double precursorMz, double precursorMzMonoisotopic, double basePeakMz,
-            float isolationLowerOffset, float isolationUpperOffset, float isolationWidth,
+            float isolationLower, float isolationUpper, float isolationWidth,
             float precursorIntensity, float basePeakIntensity, float totalIonCurrent,
             float ionInjectionTimeMs, float collisionEnergy, float faimsCv,
             float elapsedScanTimeMs, float lowMass, float highMass,
             int precursorCharge, int masterScanNumber,
+            uint peakFlags, int auxiliaryArrayCount,
             int filterStringLen, uint arraysOffset,
             uint metadataOffset, uint metadataLength)
         {
@@ -520,7 +623,7 @@ namespace ThermoRawFileParser.Writer
             // Block 1 — identity & shape (16 bytes)
             BinaryPrimitives_WriteU32(span, 0,  (uint)recordSize);
             BinaryPrimitives_WriteU32(span, 4,  (uint)scanId);
-            span[8]  = (byte)msLevel;
+            span[8]  = unchecked((byte)(sbyte)msLevel);
             span[9]  = EncodePolarity(polarity);
             span[10] = scanDataType;
             span[11] = activationType;
@@ -533,8 +636,8 @@ namespace ThermoRawFileParser.Writer
             BinaryPrimitives_WriteF64(span, 40, basePeakMz);
 
             // Block 3 — floats (48 bytes)
-            BinaryPrimitives_WriteF32(span, 48, isolationLowerOffset);
-            BinaryPrimitives_WriteF32(span, 52, isolationUpperOffset);
+            BinaryPrimitives_WriteF32(span, 48, isolationLower);
+            BinaryPrimitives_WriteF32(span, 52, isolationUpper);
             BinaryPrimitives_WriteF32(span, 56, isolationWidth);
             BinaryPrimitives_WriteF32(span, 60, precursorIntensity);
             BinaryPrimitives_WriteF32(span, 64, basePeakIntensity);
@@ -549,8 +652,8 @@ namespace ThermoRawFileParser.Writer
             // Block 4 — ints & flags (16 bytes)
             BinaryPrimitives_WriteI32(span, 96,  precursorCharge);
             BinaryPrimitives_WriteI32(span, 100, masterScanNumber);
-            BinaryPrimitives_WriteU32(span, 104, 0x1u);  // peak_flags: bit 0 = sorted_by_mz
-            BinaryPrimitives_WriteU32(span, 108, 0u);    // reserved1
+            BinaryPrimitives_WriteU32(span, 104, peakFlags);
+            BinaryPrimitives_WriteU32(span, 108, (uint)auxiliaryArrayCount);
 
             // Block 5 — variable-section pointers (16 bytes)
             BinaryPrimitives_WriteU16(span, 112, (ushort)filterStringLen);
@@ -572,7 +675,7 @@ namespace ThermoRawFileParser.Writer
 
         /// <summary>
         /// Map a single reaction's <see cref="ActivationType"/> to the on-wire byte encoding.
-        /// EThcD (5) is set by the caller when the supplemental-activation pattern is detected;
+        /// EThcD/ETciD (5) is set by the caller when the supplemental-activation pattern is detected;
         /// this helper returns the primary type only.
         /// </summary>
         public static byte EncodeActivationType(ActivationType t) => t switch
@@ -581,7 +684,7 @@ namespace ThermoRawFileParser.Writer
             ActivationType.HigherEnergyCollisionalDissociation => 2,
             ActivationType.ElectronTransferDissociation        => 3,
             ActivationType.ElectronCaptureDissociation         => 4,
-            // 5 reserved for caller-detected EThcD
+            // 5 reserved for caller-detected EThcD/ETciD
             ActivationType.UltraVioletPhotoDissociation        => 6,
             ActivationType.NegativeElectronTransferDissociation => 7,
             ActivationType.MultiPhotonDissociation             => 8,

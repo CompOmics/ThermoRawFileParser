@@ -6,6 +6,7 @@ Supported formats:
 * MGF
 * mzML and indexed mzML
 * Apache Parquet
+* BinarySoa
 
 Version before 2.0.0 require Mono to run on Linux and Mac.
 
@@ -58,7 +59,7 @@ ThermoRawFileParser -d=/home/user/data_input/
 
 When running framework-based version use `dotnet ThermoRawFileParser.dll` instead.
 
- The optional parameters only work in the -option=value format. The tool can output some RAW file metadata `-m=0|1` (0 for JSON, 1 for TXT) and the spectra file `-f=0|1|2|3|4` (0 for MGF, 1 for mzML, 2 for indexed mzML, 3 for Parquet, 4 for no output) or both. Use the `-p` flag to disable the thermo native peak picking. 
+ The optional parameters only work in the -option=value format. The tool can output some RAW file metadata `-m=0|1` (0 for JSON, 1 for TXT) and the spectra file `-f=0|1|2|3|4|5` (0 for MGF, 1 for mzML, 2 for indexed mzML, 3 for Parquet, 4 for BinarySoa, 5 for no output) or both. Use the `-p` flag to disable the thermo native peak picking.
 
 ```
 Usage is ThermoRawFileParser.exe [subcommand] [options]
@@ -81,10 +82,11 @@ optional subcommands are xic|query (use [subcommand] -h for more info]):
                                file or directory output. Implies silent logging,
                                 i.e. logging level 0
   -f, --format=VALUE         The spectra output format: 0 for MGF, 1 for mzML,
-                               2 for indexed mzML, 3 for Parquet, 4 for None (
-                               no output); both numeric and text (case
-                               insensitive) value recognized. Defaults to
-                               indexed mzML if no format is specified.
+                               2 for indexed mzML, 3 for Parquet, 4 for
+                               BinarySoa, 5 for None (no output); both numeric
+                               and text (case insensitive) value recognized.
+                               Defaults to indexed mzML if no format is
+                               specified.
   -m, --metadata=VALUE       The metadata output format: 0 for JSON, 1 for TXT,
                                2 for None (no output); both numeric and text (
                                case insensitive) value recognized. Defaults to
@@ -117,9 +119,10 @@ optional subcommands are xic|query (use [subcommand] -h for more info]):
                                integers (1,2,3) and/or intervals (1-3), open-
                                end intervals (1-) are allowed
   -P, --mgfPrecursor         Include precursor scan number in MGF file TITLE
-  -N, --noiseData            Include noise data in mzML output
+  -N, --noiseData            Include noise data in mzML and BinarySoa output
   -C, --chargeData           Include instrument detected charge states in mzML
-                               output (only for high resolution centroided data)
+                               and BinarySoa output (only for high resolution
+                               centroided data)
   -w, --warningsAreErrors    Return non-zero exit code for warnings; default
                                only for errors
   -u, --s3_url[=VALUE]       Optional property to write directly the data into

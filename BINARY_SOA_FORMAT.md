@@ -60,7 +60,7 @@ A record consists of:
 [Fixed Header — 128 bytes, all scalar fields present at known offsets]
 [Filter string — filter_string_len bytes, UTF-8, no null terminator]
 [Pad to 8-byte alignment]
-[Peak arrays — mz f64×N then intensity f32×N, packed]
+[Peak arrays — mz f64×N, intensity f32×N, then optional arrays flagged in the header]
 [Pad to 8-byte alignment]
 [Optional metadata dump — key/value strings of all trailer fields]
 [Pad to 8-byte alignment, brings record to multiple of 8]
@@ -72,7 +72,7 @@ A record consists of:
 |-----|------|------|-------|-------------|
 | 0   | 4 | `u32` | `record_size` | Total bytes of this record (including padding); used to skip to next record. |
 | 4   | 4 | `u32` | `scan_id` | RAW file scan number. |
-| 8   | 1 | `u8`  | `ms_level` | `1`, `2`, `3`, ... |
+| 8   | 1 | `i8`  | `ms_order` | Raw Thermo MS order (`1`, `2`, `3`, ...; negative values preserve parent, neutral loss, and neutral gain scans). |
 | 9   | 1 | `u8`  | `polarity` | `0` = negative, `1` = positive, `255` = unknown |
 | 10  | 1 | `u8`  | `scan_data_type` | `0` = profile, `1` = centroid |
 | 11  | 1 | `u8`  | `activation_type` | See enum below; `0` = none, `255` = unknown |
@@ -81,8 +81,8 @@ A record consists of:
 | 24  | 8 | `f64` | `precursor_mz` | NaN if MS1 or unavailable. |
 | 32  | 8 | `f64` | `precursor_mz_monoisotopic` | NaN if no monoisotopic correction was reported. |
 | 40  | 8 | `f64` | `base_peak_mz` | NaN if no peaks. |
-| 48  | 4 | `f32` | `isolation_lower_offset` | NaN if MS1 or unavailable. (Da, signed offset from precursor_mz to lower bound.) |
-| 52  | 4 | `f32` | `isolation_upper_offset` | NaN if MS1 or unavailable. (Da, signed offset from precursor_mz to upper bound.) |
+| 48  | 4 | `f32` | `isolation_lower` | NaN if MS1 or unavailable. Lower isolation window bound in Da, aligned with the parquet column. |
+| 52  | 4 | `f32` | `isolation_upper` | NaN if MS1 or unavailable. Upper isolation window bound in Da, aligned with the parquet column. |
 | 56  | 4 | `f32` | `isolation_width` | NaN if MS1. |
 | 60  | 4 | `f32` | `precursor_intensity` | `0.0` if MS1 or not computed. |
 | 64  | 4 | `f32` | `base_peak_intensity` | NaN if no peaks. |
@@ -95,8 +95,8 @@ A record consists of:
 | 92  | 4 | `f32` | `high_mass` | Scan range end (Da). NaN if not available. |
 | 96  | 4 | `i32` | `precursor_charge` | `-1` if unknown. |
 | 100 | 4 | `i32` | `master_scan_number` | `-1` if no parent (MS1) or unknown. |
-| 104 | 4 | `u32` | `peak_flags` | Bit 0: `peaks_sorted_by_mz` (set = sorted ascending). Bits 1-31: reserved. |
-| 108 | 4 | `u32` | `reserved1` | `0` |
+| 104 | 4 | `u32` | `peak_flags` | Bit 0: `peaks_sorted_by_mz`; bit 1: charge array present; bit 2: noise arrays present. |
+| 108 | 4 | `u32` | `auxiliary_array_count` | Number of entries in each optional noise array. `0` if no noise arrays are present. |
 | 112 | 2 | `u16` | `filter_string_len` | Bytes (UTF-8) of filter string immediately after header. |
 | 114 | 2 | `u16` | `reserved2` | `0` |
 | 116 | 4 | `u32` | `arrays_offset` | Byte offset (from record start) to the mz array. Always `>= 128 + filter_string_len`. |
@@ -114,7 +114,7 @@ Total: **128 bytes** (two 64-byte cache lines).
 | 2     | HCD (Higher-Energy Collisional Dissociation) |
 | 3     | ETD (Electron Transfer Dissociation) |
 | 4     | ECD (Electron Capture Dissociation) |
-| 5     | EThcD (ETD + HCD supplemental) |
+| 5     | EThcD / ETciD (ETD/ECD + HCD/CID supplemental) |
 | 6     | UVPD (Ultraviolet Photodissociation) |
 | 7     | NETD (Negative Electron Transfer) |
 | 8     | MPD (Multi-Photon Dissociation) |
@@ -123,8 +123,8 @@ Total: **128 bytes** (two 64-byte cache lines).
 | 11    | nPTR (Negative Proton Transfer Reaction) |
 | 255   | Other / unknown |
 
-Note: `5` (EThcD) is reserved for caller-detected EThcD (ETD/ECD + supplemental HCD/CID); the
-encoder maps the primary reaction's `ActivationType` and leaves EThcD detection to a
+Note: `5` is reserved for caller-detected supplemental ETD/ECD activation (ETD/ECD + supplemental HCD/CID); the
+encoder maps the primary reaction's `ActivationType` and leaves EThcD/ETciD detection to a
 higher layer that inspects sequential reactions.
 
 ### Filter string
@@ -138,10 +138,19 @@ No null terminator. May be empty (`filter_string_len = 0`).
 ```
 arrays_offset + 0       : f64 mz_array[N]          (8-byte aligned)
 arrays_offset + 8N      : f32 intensity_array[N]   (4-byte aligned)
+optional pad to 8-byte alignment when optional f64 arrays follow
+if peak_flags & 0x2     : f64 charge_array[N]
+if peak_flags & 0x4     : f64 noise_mz_array[auxiliary_array_count]
+                           f64 noise_intensity_array[auxiliary_array_count]
+                           f64 noise_baseline_array[auxiliary_array_count]
 ```
 
 `mz_array` is sorted ascending if `peak_flags & 0x1` is set (which is the
 default for all output produced by the writer).
+
+The optional charge and noise arrays are emitted only when the matching TRFP
+options are requested and RawFileReader provides the data. Default SoA output
+contains only the hot-path `mz` and `intensity` arrays.
 
 ### Metadata block (optional, at `metadata_offset`)
 
@@ -222,8 +231,8 @@ loop {
   live in a new variable-length section pointed to by an offset that was
   reserved as `0` in v1. Readers tolerant to v1 still skip new sections
   cleanly because `record_size` accounts for them.
-* Bits in `peak_flags` and `reserved*` may be allocated for non-breaking
-  signals (e.g., a future "has_charge_per_peak" flag).
+* Remaining bits in `peak_flags` and `reserved*` fields may be allocated for
+  non-breaking signals.
 
 ---
 

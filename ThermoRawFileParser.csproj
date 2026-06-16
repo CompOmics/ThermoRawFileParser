@@ -41,13 +41,13 @@
   <ItemGroup>
     <PackageReference Include="AWSSDK.Core" Version="3.7.400.36" />
     <PackageReference Include="AWSSDK.S3" Version="3.7.405" />
-    <PackageReference Include="log4net" Version="3.0.1" />
+    <PackageReference Include="log4net" Version="3.3.1" />
     <PackageReference Include="Mono.Options" Version="6.12.0.148" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="1.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="NJsonSchema" Version="11.0.2" />
     <PackageReference Include="Parquet.Net" Version="5.0.1" />
-    <PackageReference Include="ThermoFisher.CommonCore.RawFileReader" Version="8.0.6" />
+    <PackageReference Include="ThermoFisher.CommonCore.RawFileReader" Version="8.0.37" />
     <PackageReference Include="zlib.net-mutliplatform" Version="1.0.8" />
   </ItemGroup>
 

@@ -82,7 +82,7 @@ namespace ThermoRawFileParser
                 }
                 else
                 {
-                    Log.Error("An unexpected error occured (see below)");
+                    Log.Error("An unexpected error occurred (see below)");
                     Log.Error(ex.ToString());
                     parseInput.NewError();
                 }

@@ -310,7 +310,7 @@ namespace ThermoRawFileParser
                 }
                 else
                 {
-                    Log.Error("An unexpected error occured:");
+                    Log.Error("An unexpected error occurred:");
                     Log.Error(ex.ToString());
                 }
             }
@@ -473,7 +473,7 @@ namespace ThermoRawFileParser
                 }
                 else
                 {
-                    Log.Error("An unexpected error occured:");
+                    Log.Error("An unexpected error occurred:");
                     Log.Error(ex.ToString());
                 }
             }
@@ -853,8 +853,8 @@ namespace ThermoRawFileParser
             catch (Amazon.S3.AmazonS3Exception ex)
             {
                 Log.Error(!ex.Message.IsNullOrEmpty()
-                    ? "An Amazon S3 exception occured: " + ex.Message
-                    : "An Amazon S3 exception occured: " + ex);
+                    ? "An Amazon S3 exception occurred: " + ex.Message
+                    : "An Amazon S3 exception occurred: " + ex);
             }
             catch (Exception ex)
             {
@@ -864,7 +864,7 @@ namespace ThermoRawFileParser
                 }
                 else
                 {
-                    Log.Error("An unexpected error occured:");
+                    Log.Error("An unexpected error occurred:");
                     Log.Error(ex.ToString());
                 }
             }

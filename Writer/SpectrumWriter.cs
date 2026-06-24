@@ -85,9 +85,21 @@ namespace ThermoRawFileParser.Writer
             }
 
             var fileName = NormalizeFileName(ParseInput.OutputFile, extension, ParseInput.Gzip);
-            if (ParseInput.OutputFormat == OutputFormat.Parquet)
+            if (ParseInput.OutputFormat == OutputFormat.Parquet
+                || ParseInput.OutputFormat == OutputFormat.BinarySoa)
             {
-                Writer = new StreamWriter(File.Create(fileName));
+                // Binary outputs: raw FileStream, no encoding wrapper.
+                // Writers will reach Writer.BaseStream and write raw bytes.
+                if (ParseInput.Gzip && ParseInput.OutputFormat == OutputFormat.BinarySoa)
+                {
+                    var fileStream = File.Create(fileName);
+                    var compress = new GZipStream(fileStream, CompressionMode.Compress);
+                    Writer = new StreamWriter(compress);
+                }
+                else
+                {
+                    Writer = new StreamWriter(File.Create(fileName));
+                }
             }
             else if (!ParseInput.Gzip || ParseInput.OutputFormat == OutputFormat.IndexMzML)
             {

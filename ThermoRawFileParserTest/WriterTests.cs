@@ -475,5 +475,86 @@ namespace ThermoRawFileParserTest
 
             File.Delete(parquetFilePath);
         }
+
+        [TestCase(false, 48520, 1632)]
+        [TestCase(true, 305213, 17758)]
+        public void TestBinarySoa(bool profile, int expectedPeakCount, int expectedScan22PeakCount)
+        {
+            var tempFilePath = Path.GetTempPath();
+
+            var testRawFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"Data/small.RAW");
+            var parseInput = new ParseInput(testRawFile, null, tempFilePath, OutputFormat.BinarySoa);
+            if (profile)
+            {
+                parseInput.NoPeakPicking = new HashSet<int> { 1, 2 };
+            }
+
+            RawFileParser.Parse(parseInput);
+            Assert.That(parseInput.Errors, Is.EqualTo(0));
+            Assert.That(parseInput.Warnings, Is.EqualTo(0));
+
+            var binaryFilePath = Path.Combine(tempFilePath, "small.rcia.bin");
+            Assert.That(File.Exists(binaryFilePath));
+
+            var records = ReadBinarySoaRecords(binaryFilePath);
+            Assert.That(records.Count, Is.EqualTo(48));
+            Assert.That(records.Sum(r => r.PeakCount), Is.EqualTo(expectedPeakCount));
+            Assert.That(records.Single(r => r.ScanId == 22).PeakCount, Is.EqualTo(expectedScan22PeakCount));
+            Assert.That(records.Any(r => r.MsOrder > 1 &&
+                                         r.MasterScanNumber > 0 &&
+                                         !float.IsNaN(r.IsolationLower) &&
+                                         !float.IsNaN(r.IsolationUpper) &&
+                                         r.IsolationLower < r.IsolationUpper));
+
+            File.Delete(binaryFilePath);
+        }
+
+        private struct BinarySoaRecord
+        {
+            public int ScanId;
+            public int MsOrder;
+            public int PeakCount;
+            public float IsolationLower;
+            public float IsolationUpper;
+            public int MasterScanNumber;
+        }
+
+        private static List<BinarySoaRecord> ReadBinarySoaRecords(string path)
+        {
+            var records = new List<BinarySoaRecord>();
+
+            using (var fs = File.OpenRead(path))
+            using (var br = new BinaryReader(fs))
+            {
+                Assert.That(br.ReadBytes(8), Is.EqualTo(new byte[] { 0x52, 0x43, 0x49, 0x41, 0x53, 0x54, 0x52, 0x31 }));
+                Assert.That(br.ReadUInt16(), Is.EqualTo(1));
+                Assert.That(br.ReadUInt16(), Is.EqualTo(32));
+                br.ReadBytes(20);
+
+                while (true)
+                {
+                    var header = br.ReadBytes(128);
+                    var recordSize = BitConverter.ToUInt32(header, 0);
+                    if (recordSize == 0)
+                    {
+                        break;
+                    }
+
+                    records.Add(new BinarySoaRecord
+                    {
+                        ScanId = (int)BitConverter.ToUInt32(header, 4),
+                        MsOrder = (sbyte)header[8],
+                        PeakCount = (int)BitConverter.ToUInt32(header, 12),
+                        IsolationLower = BitConverter.ToSingle(header, 48),
+                        IsolationUpper = BitConverter.ToSingle(header, 52),
+                        MasterScanNumber = BitConverter.ToInt32(header, 100)
+                    });
+
+                    fs.Seek(recordSize - 128, SeekOrigin.Current);
+                }
+            }
+
+            return records;
+        }
     }
 }

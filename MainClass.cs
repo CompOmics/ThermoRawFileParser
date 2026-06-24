@@ -528,7 +528,7 @@ namespace ThermoRawFileParser
                 },
                 {
                     "f=|format=",
-                    "The spectra output format: 0 for MGF, 1 for mzML, 2 for indexed mzML, 3 for Parquet, 4 for None (no output); both numeric and text (case insensitive) value recognized. Defaults to indexed mzML if no format is specified.",
+                    "The spectra output format: 0 for MGF, 1 for mzML, 2 for indexed mzML, 3 for Parquet, 4 for BinarySoa, 5 for None (no output); both numeric and text (case insensitive) value recognized. Defaults to indexed mzML if no format is specified.",
                     v => outputFormatString = v
                 },
                 {
@@ -582,11 +582,11 @@ namespace ThermoRawFileParser
                     v => parseInput.MgfPrecursor = v != null
                 },
                 {
-                    "N|noiseData", "Include noise data in mzML output",
+                    "N|noiseData", "Include noise data in mzML and BinarySoa output",
                     v => parseInput.NoiseData = v != null
                 },
                 {
-                    "C|chargeData", "Include instrument detected charge states in mzML output (only for high resolution centroided data)",
+                    "C|chargeData", "Include instrument detected charge states in mzML and BinarySoa output (only for high resolution centroided data)",
                     v => parseInput.ChargeData = v != null
                 },
                 {
